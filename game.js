@@ -2,6 +2,71 @@
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 
+// --- SPRITES: preload note and rest images ---
+const noteImgs = { open: new Image(), closed: new Image() };
+noteImgs.open.src = "images/note-open.png";
+noteImgs.closed.src = "images/note-closed.png";
+
+const restImgs = {
+  sixteenth: new Image(),
+  eighth: new Image(),
+  quarter: new Image(),
+  half: new Image(),
+  whole: new Image(),
+};
+restImgs.sixteenth.src = "images/rest-sixteenth.png";
+restImgs.eighth.src = "images/rest-eighth.png";
+restImgs.quarter.src = "images/rest-quarter.png";
+restImgs.half.src = "images/rest-half.png";
+restImgs.whole.src = "images/rest-whole.png";
+
+// --- SOUNDS ---
+const sfx = {
+  eat: new Audio("sounds/eat.wav"),
+  gameOver: new Audio("sounds/gameOver.wav"),
+  gameStart: new Audio("sounds/gameStart.wav"),
+  jumpUp: new Audio("sounds/jumpUp.wav"),
+  jumpDown: new Audio("sounds/jumpDown.wav")
+};
+// Preload SFX
+sfx.eat.preload = "auto";
+sfx.gameOver.preload = "auto";
+sfx.gameStart.preload = "auto";
+sfx.jumpUp.preload = "auto";
+sfx.jumpDown.preload = "auto";
+
+// --- MUSIC ---
+const bgMusic = new Audio("sounds/musicLoop1.mp3");
+bgMusic.loop = true;
+// --- Volume controls (grouped)
+let musicVolume = 0.5; // 0.0 - 1.0
+let sfxVolume = 0.5;   // 0.0 - 1.0
+
+// Apply initial volumes
+bgMusic.volume = musicVolume;
+Object.values(sfx).forEach(a => a.volume = sfxVolume);
+
+function applySfxVolume(v) {
+  sfxVolume = v;
+  Object.values(sfx).forEach(a => a.volume = sfxVolume);
+  const el = document.getElementById("sfxVolLabel");
+  if (el) el.textContent = Math.round(sfxVolume * 100) + "%";
+}
+function applyMusicVolume(v) {
+  musicVolume = v;
+  bgMusic.volume = musicVolume;
+  const el = document.getElementById("musicVolLabel");
+  if (el) el.textContent = Math.round(musicVolume * 100) + "%";
+}
+
+let soundOn = true; // default ON
+
+// --- Sprite sizing & alignment ---
+const NOTE_SCALE = 4;           // visual size multiplier relative to radius (width = radius*2*NOTE_SCALE)
+const REST_SCALE = 4;           // visual size multiplier for rests
+const REST_Y_OFFSET = 0;        // tweak vertically if a rest sits too high/low
+const NOTE_Y_OFFSET = 100;        // vertical nudge for note sprite (visual only)
+
 // Game settings
 const game = {
   width: canvas.width,
@@ -101,62 +166,28 @@ const note = {
   }
 },
     draw: function () {
-        // Note head (circle)
-        ctx.beginPath();
-        if (this.mouthOpen) {
-          ctx.arc(this.x, this.y, this.radius, 0.2 * Math.PI, 1.8 * Math.PI);
-          ctx.lineTo(this.x, this.y); // Mouth point
-        } else {
-          ctx.arc(this.x, this.y, this.radius, 0, 2 * Math.PI);
-        }
-        ctx.fillStyle = "black";
-        ctx.fill();
-        ctx.closePath();
-
-        // Eye
-        ctx.beginPath();
-        ctx.arc(this.x + 8, this.y - 18, 4, 0, Math.PI * 2);
-        ctx.fillStyle = "white";
-        ctx.fill();
-        ctx.closePath();
-
-        // Tapered stem
-        ctx.beginPath();
-        ctx.moveTo(this.x - 32, this.y + 11);      // Bottom wide point
-        ctx.lineTo(this.x - 21, this.y - 16);      // Bottom narrow point
-        ctx.lineTo(this.x - 44, this.y - 100);    // Top narrow point
-        ctx.lineTo(this.x - 52, this.y - 100);    // Top wide point
-        ctx.closePath();
-        ctx.fillStyle = "black";
-        ctx.fill();
-
-        // Curved flag at the top of the stem, curving out to the left and tapering to a point about half the stem's height
-        ctx.beginPath();
-        const stemTopX = this.x - 44;
-        const stemTopY = this.y - 100;
-        const flagTipX = this.x - 95; // Farther left
-        const flagTipY = this.y - 10;  // About half the stem height down
-
-        ctx.moveTo(stemTopX, stemTopY);
-        ctx.quadraticCurveTo(
-            this.x - 120, this.y - 120, // Control point, above and left of stem
-            flagTipX, flagTipY          // End point (flag tip)
-        );
-        ctx.lineTo(flagTipX + 1, flagTipY + 8); // Tapered edge back up
-        ctx.quadraticCurveTo(
-            this.x - 110, this.y - 90,  // Control point, inside curve
-            stemTopX - 3, stemTopY + 8 // Back to stem, slightly below top
-        );
-        ctx.closePath();
-        ctx.fillStyle = "black";
-        ctx.fill();
+      const img = this.mouthOpen ? noteImgs.open : noteImgs.closed;
+      const w = this.radius * 2 * NOTE_SCALE;
+      const h = w; // square sprite assumed
+      const left = this.x - w / 2;            // center horizontally on note.x
+      const top  = (this.y + this.radius) - h + NOTE_Y_OFFSET; // add visual nudge
+      ctx.drawImage(img, left, top, w, h);
     }
 };
 
 // Rests collectible system
 const rests = [];
 let restSpawnTimer = 0;
-const spawnInterval = 67; // frames
+const baseSpawnInterval = 111; // frames between spawns at start
+const minSpawnInterval = 20;   // hardest setting (lower = more frequent)
+let spawnInterval = baseSpawnInterval;
+
+// Cap difficulty adjustments after this many seconds
+const DIFFICULTY_LOCK_SECONDS = 60;
+let runStartTime = performance.now();
+
+// Score-based difficulty ramp (higher score => faster spawns)
+const difficultyPerPoint = 6; // frames reduced per 1.0 score
 
 const restValues = {
   sixteenth: [1, 16],
@@ -176,9 +207,6 @@ function spawnRest() {
   rests.push({
     x: game.width + 20,
     y: y - note.radius + 5,
-    lineIndex,
-    width: 20,
-    height: 20,
     collected: false,
     type
   });
@@ -191,29 +219,27 @@ function updateAndDrawRests() {
 
     if (rest.collected) continue;
 
-    switch (rest.type) {
-      case "eighth":
-        drawEighthRest(ctx, rest.x, rest.y, 1);
-        break;
-      case "quarter":
-        drawQuarterRest(ctx, rest.x, rest.y, 1);
-        break;
-      case "half":
-        drawHalfRest(ctx, rest.x, rest.y, 1.32);
-        break;
-      case "whole":
-        drawWholeRest(ctx, rest.x, rest.y, 1.32);
-        break;
-      default:
-        drawSixteenthRest(ctx, rest.x, rest.y, 1);
-    }
+    // Draw rest sprite (center anchor)
+    const rw = note.radius * 2 * REST_SCALE;
+    const rh = rw; // square sprite assumed
+    const rleft = rest.x - rw / 2;
+    const rtop  = rest.y - rh / 2 + REST_Y_OFFSET;
+    ctx.drawImage(restImgs[rest.type], rleft, rtop, rw, rh);
 
     // Collision detection
     const dx = rest.x - note.x;
     const dy = rest.y - note.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
 
+    // Collision hotspot for the mouth
+    // const mouthY = note.y - note.radius * 0.1;   // slight upward bias
+    const mouthY = note.y - note.radius * 0.1 + NOTE_Y_OFFSET;   // match note draw offset
+
     if (!rest.collected && distance < note.radius) {
+      if (soundOn) {
+        sfx.eat.currentTime = 0;
+        sfx.eat.play();
+      }
       // Eaten
       rest.collected = true;
       const [addN, addD] = restValues[rest.type];
@@ -227,7 +253,7 @@ function updateAndDrawRests() {
     }
 
     // Remove offscreen or missed rests
-    if (rest.x + rest.width < 0) {
+    if (rest.x + (note.radius * 2 * REST_SCALE) < 0) {
       if (!rest.collected) {
         // Missed
         const [subN, subD] = restValues[rest.type];
@@ -247,10 +273,18 @@ function updateAndDrawRests() {
 
 document.addEventListener("keydown", (e) => {
   if (e.code === "ArrowUp" && note.currentLineIndex > 0) {
+    if (soundOn) {
+      sfx.jumpUp.currentTime = 0;
+      sfx.jumpUp.play();
+    }
     note.targetLineIndex = note.currentLineIndex - 1;
     note.vy = game.jumpStrength;
     note.descending = false;
   } else if (e.code === "ArrowDown" && note.currentLineIndex < game.staffYPositions.length - 1) {
+    if (soundOn) {
+      sfx.jumpDown.currentTime = 0;
+      sfx.jumpDown.play();
+    }
     note.targetLineIndex = note.currentLineIndex + 1;
     note.vy = -game.jumpStrength * 0.8; // softer downward motion
     note.descending = true;
@@ -283,7 +317,7 @@ overlay.style.display = "flex";
 overlay.style.flexDirection = "column";
 overlay.style.alignItems = "center";
 overlay.style.justifyContent = "center";
-overlay.style.backgroundColor = "rgba(224, 224, 224, 0.95)";
+overlay.style.backgroundColor = "rgba(255, 255, 255, 1)";
 overlay.style.fontFamily = "sans-serif";
 overlay.style.textAlign = "center";
 document.body.appendChild(overlay);
@@ -292,22 +326,88 @@ function showStartScreen() {
   overlay.innerHTML = `
     <h1>EAT THE RESTS TO DEFEAT THE SILENCE!</h1>
     <p>⬆️ = Jump Up &nbsp;&nbsp;&nbsp; ⬇️ = Jump Down</p>
+    <button id="soundToggle" style="font-size: 1.2rem; padding: 5px 15px; margin-bottom: 12px;">Sound: OFF</button>
+    <div style="display:flex; gap:24px; align-items:center; margin-bottom: 12px; flex-wrap:wrap; justify-content:center;">
+      <label style="font-size:0.95rem;">Music Volume: <span id="musicVolLabel">${Math.round(musicVolume*100)}%</span></label>
+      <input id="musicVol" type="range" min="0" max="1" step="0.05" value="${musicVolume}" style="width:220px;" />
+    </div>
+    <div style="display:flex; gap:24px; align-items:center; margin-bottom: 20px; flex-wrap:wrap; justify-content:center;">
+      <label style="font-size:0.95rem;">SFX Volume: <span id="sfxVolLabel">${Math.round(sfxVolume*100)}%</span></label>
+      <input id="sfxVol" type="range" min="0" max="1" step="0.05" value="${sfxVolume}" style="width:220px;" />
+    </div>
     <button id="startButton" style="font-size: 2rem; padding: 10px 30px;">START</button>
   `;
   document.getElementById("startButton").onclick = () => {
     gameStarted = true;
     overlay.style.display = "none";
+
+    if (soundOn) {
+      sfx.gameStart.currentTime = 0;
+      sfx.gameStart.play();
+    }
+    if (soundOn) {
+      bgMusic.currentTime = 0;
+      bgMusic.play();
+    }
+
+    // Reset spawn timer & interval to base, and restart difficulty timer
+    restSpawnTimer = 0;
+    spawnInterval = baseSpawnInterval;
+    runStartTime = performance.now();
+
     gameLoop();
   };
+  document.getElementById("soundToggle").onclick = () => {
+    soundOn = !soundOn;
+    document.getElementById("soundToggle").innerText = soundOn ? "Sound: ON" : "Sound: OFF";
+    if (soundOn) {
+      if (gameStarted && !gameOver) {
+        bgMusic.currentTime = 0;
+        bgMusic.play();
+      }
+    } else {
+      bgMusic.pause();
+      bgMusic.currentTime = 0;
+    }
+  };
+  // Add volume slider event listeners
+  const musicSlider = document.getElementById("musicVol");
+  musicSlider.addEventListener("input", (e) => {
+    applyMusicVolume(parseFloat(e.target.value));
+    // If music is currently on and game running, reflect new volume immediately
+    if (soundOn && gameStarted && !gameOver) {
+      bgMusic.volume = musicVolume;
+    }
+  });
+
+  const sfxSlider = document.getElementById("sfxVol");
+  sfxSlider.addEventListener("input", (e) => {
+    applySfxVolume(parseFloat(e.target.value));
+  });
 }
 
 function showGameOverScreen() {
+  // Stop background music on game over
+  bgMusic.pause();
+  bgMusic.currentTime = 0;
+  if (soundOn) {
+    sfx.gameOver.currentTime = 0;
+    sfx.gameOver.play();
+  }
   overlay.innerHTML = `
     <h1 style="font-size: 4rem;">THE SILENCE HAS WON</h1>
     <button id="restartButton" style="font-size: 2rem; padding: 10px 30px;">Try Again?</button>
   `;
   overlay.style.display = "flex";
   document.getElementById("restartButton").onclick = () => {
+    if (soundOn) {
+      sfx.gameStart.currentTime = 0;
+      sfx.gameStart.play();
+    }
+    if (soundOn) {
+      bgMusic.currentTime = 0;
+      bgMusic.play();
+    }
     // Reset score
     scoreNumerator = 1;
     scoreDenominator = 8;
@@ -326,6 +426,10 @@ function showGameOverScreen() {
     rests.length = 0;
     restSpawnTimer = 0;
 
+    // Reset spawn interval to base
+    spawnInterval = baseSpawnInterval;
+    runStartTime = performance.now();
+
     // Restart game
     gameOver = false;
     overlay.style.display = "none";
@@ -336,10 +440,21 @@ function showGameOverScreen() {
 function gameLoop() {
   if (!gameStarted || gameOver) return;
 
+  // --- Difficulty ramp: score-based until time cap, then freeze
+  const elapsed = (performance.now() - runStartTime) / 1000;
+  if (elapsed <= DIFFICULTY_LOCK_SECONDS) {
+    const scoreValue = scoreNumerator / scoreDenominator; // e.g., 1/8 => 0.125
+    const maxReduction = baseSpawnInterval - minSpawnInterval;
+    const reduction = Math.min(maxReduction, difficultyPerPoint * scoreValue);
+    spawnInterval = Math.max(minSpawnInterval, Math.round(baseSpawnInterval - reduction));
+  } else {
+    // After the cap, keep current spawnInterval but never go below the floor
+    spawnInterval = Math.max(minSpawnInterval, spawnInterval);
+  }
+
   // Clear the screen
   ctx.clearRect(0, 0, game.width, game.height);
 
-  // TEMP: background color to see it's working
   ctx.fillStyle = "#e0e0e0";
   ctx.fillRect(0, 0, game.width, game.height);
 
@@ -359,7 +474,6 @@ function gameLoop() {
   updateAndDrawRests();
 
   // Optionally, draw a demo rest ahead of the note
-  // drawSixteenthRest(ctx, note.x + 100, note.y, 1.2);
 
   // Update the score display every frame
   updateScoreDisplay();
@@ -368,144 +482,7 @@ function gameLoop() {
   requestAnimationFrame(gameLoop);
 }
 
-function drawSixteenthRest(ctx, x, y, scale = 1) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(scale, scale);
-  ctx.fillStyle = "black";
-
-  // Dots
-  ctx.beginPath();
-  ctx.arc(-3, -12, 4, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.beginPath();
-  ctx.arc(-4, 0.5, 4, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Diagonal slash, slanted like a forward slash (/)
-  ctx.beginPath();
-  ctx.moveTo(11, -16);
-  ctx.lineTo(2, 22);
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = "black";
-  ctx.stroke();
-
-  // Curve from stem to top dot
-  ctx.beginPath();
-  ctx.moveTo(11, -15); // Starting point at the stem
-  ctx.quadraticCurveTo(0, -9, -2, -11); // Control and end near the top dot
-  ctx.lineWidth = 4;
-  ctx.stroke();
-
-  // Curve from stem to bottom dot
-  ctx.beginPath();
-  ctx.moveTo(7, -1); // Starting point at the stem
-  ctx.quadraticCurveTo(3, 2, -5, 2.5); // Control and end near the bottom dot
-  ctx.lineWidth = 4;
-  ctx.stroke();
-
-  ctx.restore();
-}
-
-function drawEighthRest(ctx, x, y, scale = 1) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(scale, scale);
-  ctx.fillStyle = "black";
-
-  // Top dot
-  ctx.beginPath();
-  ctx.arc(-3, -12, 5, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Diagonal slash, slanted like a forward slash (/)
-  ctx.beginPath();
-  ctx.moveTo(11, -16);
-  ctx.lineTo(2, 22);
-  ctx.lineWidth = 5;
-  ctx.strokeStyle = "black";
-  ctx.stroke();
-
-  // Curve from stem to top dot
-  ctx.beginPath();
-  ctx.moveTo(11, -15); // Starting point at the stem
-  ctx.quadraticCurveTo(0, -9, -2, -11); // Control and end near the top dot
-  ctx.lineWidth = 5;
-  ctx.stroke();
-
-  ctx.restore();
-}
-
-function drawQuarterRest(ctx, x, y, scale = 1) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(scale, scale);
-  ctx.strokeStyle = "black";
-  ctx.lineWidth = 6;
-  ctx.lineJoin = "round";
-
-  // "Z" shape 
-  ctx.beginPath();
-  ctx.moveTo(0, -18);       // Top-left of Z
-  ctx.lineTo(15, -15);      // Top-right of Z
-  ctx.lineTo(0, 1);      // Diagonal to bottom-left
-  ctx.lineTo(15, 5);     // Bottom-right of Z
-  ctx.stroke();
-
-  // "c" tail with oval warp
-  ctx.save();
-  ctx.translate(11, 10);  // Move to arc center
-  ctx.scale(1, 0.66);        // Horizontal compression
-  ctx.beginPath();
-  ctx.arc(0.5, 1.9, 9, Math.PI * 1.6, Math.PI * 0.45, true); // Arc centered at origin
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.restore();
-}
-function drawHalfRest(ctx, x, y, scale = 1) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(scale, scale);
-  ctx.fillStyle = "black";
-  ctx.strokeStyle = "black";
-  ctx.lineWidth = 4;
-
-  // Draw the top hat rectangle
-  ctx.beginPath();
-  ctx.rect(-10, -10, 20, 10); // x, y, width, height
-  ctx.fill();
-
-  // Draw the bottom line (the hat brim)
-  ctx.beginPath();
-  ctx.moveTo(-17, 0);
-  ctx.lineTo(17, 0);
-  ctx.stroke();
-
-  ctx.restore();
-}
-
-function drawWholeRest(ctx, x, y, scale = 1) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(scale, scale);
-  ctx.fillStyle = "black";
-  ctx.strokeStyle = "black";
-  ctx.lineWidth = 4;
-
-  // Draw the rectangle hanging below the line
-  ctx.beginPath();
-  ctx.rect(-10, 0, 20, 10); // x, y, width, height
-  ctx.fill();
-
-  // Draw the top line (hat brim)
-  ctx.beginPath();
-  ctx.moveTo(-17, 0);
-  ctx.lineTo(17, 0);
-  ctx.stroke();
-
-  ctx.restore();
-}
 // Start the game loop
 showStartScreen();
+// Initialize volume labels on first render (if elements exist)
+applyMusicVolume(musicVolume); applySfxVolume(sfxVolume);
