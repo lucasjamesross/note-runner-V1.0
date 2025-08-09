@@ -127,6 +127,16 @@ const note = {
   this.vy += game.gravity;
   this.y += this.vy;
 
+  // Prevent rising above top of canvas
+  if (this.y - this.radius < 0) {
+    this.y = this.radius;            // clamp inside canvas
+    this.vy = 0;                     // stop upward motion
+    this.jumpsRemaining = this.maxJumps;
+    this.currentLineIndex = 0;       // top line index
+    this.targetLineIndex = 0;
+    this.descending = false;
+  }
+
   if (this.vy >= 0) {
     if (this.descending) {
       const lineY = game.staffYPositions[this.targetLineIndex];
@@ -326,7 +336,7 @@ function showStartScreen() {
   overlay.innerHTML = `
     <h1>EAT THE RESTS TO DEFEAT THE SILENCE!</h1>
     <p>⬆️ = Jump Up &nbsp;&nbsp;&nbsp; ⬇️ = Jump Down</p>
-    <button id="soundToggle" style="font-size: 1.2rem; padding: 5px 15px; margin-bottom: 12px;">Sound: OFF</button>
+    <button id="soundToggle" style="font-size: 1.2rem; padding: 5px 15px; margin-bottom: 12px;">Sound: ${soundOn ? "ON" : "OFF"}</button>
     <div style="display:flex; gap:24px; align-items:center; margin-bottom: 12px; flex-wrap:wrap; justify-content:center;">
       <label style="font-size:0.95rem;">Music Volume: <span id="musicVolLabel">${Math.round(musicVolume*100)}%</span></label>
       <input id="musicVol" type="range" min="0" max="1" step="0.05" value="${musicVolume}" style="width:220px;" />
